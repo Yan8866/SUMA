@@ -1,58 +1,21 @@
 # The demo below will open in a browser on http://localhost:7860 if running from a file
-
-
 from typing import List, Optional
 
 import gradio as gr
 from dotenv import load_dotenv
-from openai import OpenAI
 
-import os, json
-import boto3
-from botocore.exceptions import ClientError
+import os, json,  boto3
 
-# Cache so we don’t hit Secrets Manager on every request
-__OPENAI_KEY_CACHE = None
-
-def get_openai_api_key(
-    secret_name=os.getenv("OPENAI_SECRET_NAME", "suma/openai"),
-    region_name=os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-west-1",
-):
-    """Return the OpenAI API key from AWS Secrets Manager (JSON secret with key 'OPENAI_API_KEY')."""
-    global __OPENAI_KEY_CACHE
-    if __OPENAI_KEY_CACHE:
-        return __OPENAI_KEY_CACHE
-
-    client = boto3.client("secretsmanager", region_name=region_name)
+def load_openai_key_from_secret(secret_id="suma/openai", region="us-west-1"):
+    sm = boto3.client("secretsmanager", region_name=region)
+    s = sm.get_secret_value(SecretId=secret_id)
+    secret = s.get("SecretString") or s["SecretBinary"].decode("utf-8")
     try:
-        resp = client.get_secret_value(SecretId=secret_name)
-    except ClientError as e:
-        # Optional fallback: allow local ENV during dev
-        env_key = os.getenv("OPENAI_API_KEY")
-        if env_key:
-            __OPENAI_KEY_CACHE = env_key
-            return __OPENAI_KEY_CACHE
-        raise RuntimeError(f"Unable to read secret {secret_name}: {e}") from e
-
-    # SecretString if stored as text/JSON; SecretBinary if stored as binary
-    if "SecretString" in resp:
-        s = resp["SecretString"]
-    else:
-        s = resp["SecretBinary"].decode("utf-8")
-
-    try:
-        # Expecting {"OPENAI_API_KEY": "..."} — adjust if you stored a plain string
-        key = json.loads(s).get("OPENAI_API_KEY", s)
-    except json.JSONDecodeError:
-        # If you stored the key as a plain string
-        key = s
-
-    if not key:
-        raise RuntimeError(f"Secret {secret_name} did not contain OPENAI_API_KEY")
-
-    __OPENAI_KEY_CACHE = key
-    return key
-
+        key = json.loads(secret)["OPENAI_API_KEY"].strip()
+    except Exception:
+        key = secret.strip()
+    os.environ["OPENAI_API_KEY"] = key
+    print("Loaded OpenAI key prefix:", key[:7], flush=True)
 
 # ---- URL scraper ----
 try:
@@ -72,8 +35,9 @@ except Exception:
         return text
 
 # ---- environment / client ----
-OPENAI_API_KEY = get_openai_api_key()   # fetch from Secrets Manager
-client = OpenAI(api_key=OPENAI_API_KEY)
+from openai import OpenAI   # fetch from Secrets Manager
+load_openai_key_from_secret() 
+client = OpenAI()
 
 # ---- file readers ----
 def read_txt(path: str) -> str:
@@ -268,6 +232,7 @@ with gr.Blocks(css=CSS, theme=theme, title="Doc & Web Summarizer") as demo:
         btn_qa.click(on_qa, inputs=[url_in, files_in, question_in], outputs=out_md)
 
 demo.launch(server_name="0.0.0.0", server_port=8080, allowed_paths=["src"])
+
 
 
 
